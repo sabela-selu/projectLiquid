@@ -1,0 +1,120 @@
+[rule.TDD_Function_Development]
+description = """
+Enforce Test-Driven Development (TDD) workflow for new function creation:
+1. When a new function is required, first write comprehensive tests, including edge cases.
+2. Only after tests are written, proceed to implement the function.
+3. Run the tests. If tests fail, iterate on the function implementation until all tests pass.
+4. Once all tests pass, insert the function and its tests into the official codebase.
+"""
+triggers = ["function_creation_request"]
+actions = [
+    "generate_tests_for_function_and_edge_cases",
+    "implement_function",
+    "run_tests_and_iterate_until_pass",
+    "insert_function_and_tests_into_codebase"
+]
+enforced = true
+
+# ---
+# Memory Bank System - WindSurf Rules Implementation
+# ---
+
+# Global Awareness Rule: Ensures AI/IDE always checks project state/history before making suggestions or implementations
+[rule.GlobalAwareness]
+description = "Before any suggestion or implementation, the AI/IDE must check and log the current project state, history, and active mode."
+triggers = [
+    "before_suggestion",
+    "before_implementation"
+]
+actions = [
+    "check_project_state",
+    "check_project_history",
+    "check_active_mode",
+    "log_awareness_check"
+]
+enforced = true
+
+[rule.VAN]
+description = "VAN: Initialization"
+parent = "CustomModes"
+triggers = [
+    "project_start",
+    "initial_setup_request",
+    "environment_boot"
+]
+actions = [
+    "run_initialization_scripts",
+    "verify_project_structure",
+    "set_default_configs",
+    "log_stage_transition:VAN"
+]
+
+[rule.PLAN]
+description = "PLAN: Task Planning"
+parent = "CustomModes"
+triggers = [
+    "planning_request",
+    "new_feature_requested",
+    "sprint_start"
+    "plan"
+]
+actions = [
+    "generate_task_list",
+    "assign_priorities",
+    "schedule_milestones",
+    "log_stage_transition:PLAN"
+]
+
+[rule.CREATIVE]
+description = "CREATIVE: Design"
+parent = "CustomModes"
+triggers = [
+    "design_phase_entered",
+    "ui_ux_requested",
+    "prototype_needed"
+]
+actions = [
+    "open_design_tools",
+    "create_wireframes",
+    "review_designs",
+    "log_stage_transition:CREATIVE"
+]
+
+[rule.IMPLEMENT]
+description = "IMPLEMENT: Building"
+parent = "CustomModes"
+triggers = [
+    "implementation_request",
+    "tasks_ready_for_dev",
+    "code_review_passed"
+]
+actions = [
+    "start_coding_session",
+    "run_code_generators",
+    "commit_initial_build",
+    "log_stage_transition:IMPLEMENT"
+]
+
+[rule.MemoryBankSystem]
+description = "Central hub for memory and process management"
+children = ["CustomModes", "JITRuleLoading", "VisualProcessMaps", "MemoryBank"]
+path = "memory_bank/"
+
+[rule.MemoryBank]
+description = "Handles storing, retrieving, and updating project memory."
+parent = "MemoryBankSystem"
+triggers = [
+    "memory_query",
+    "memory_update",
+    "memory_insert",
+    "stage_transition",
+    "feature_completed",
+    "decision_made"
+]
+actions = [
+    "store_memory_entry",
+    "retrieve_memory_entry",
+    "update_memory_entry",
+    "log_memory_access"
+]
+enforced = true

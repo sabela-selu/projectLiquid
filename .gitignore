@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Env / IDE
+.env
+.envrc
+.vscode/
+.idea/
+
+# Poetry
+poetry.lock
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data & logs
+#results/
+logs/
+*.pickle
+*.parquet

@@ -1,0 +1,16 @@
+[
+  {
+    "id": "2025-04-23T09:25:00Z",
+    "type": "decision",
+    "stage": "PLAN",
+    "summary": "Adopted TDD for all new function development.",
+    "details": "Rule enforced in .windsurfrules as of 2025-04-23. All new functions require edge-case tests before implementation."
+  },
+  {
+    "id": "2025-04-23T09:26:00Z",
+    "type": "feature",
+    "stage": "IMPLEMENT",
+    "summary": "Implemented SMA/EMA indicators.",
+    "details": "See recipes/ch02_indicators/sma_ema.py for code."
+  }
+]
