@@ -5,10 +5,11 @@ __pycache__/
 *.so
 
 # Env / IDE
-.env
+.env*
 .envrc
 .vscode/
 .idea/
+.DS_Store
 
 # Poetry
 poetry.lock
@@ -17,7 +18,17 @@ poetry.lock
 .ipynb_checkpoints/
 
 # Data & logs
-#results/
+results/
 logs/
 *.pickle
 *.parquet
+*.csv
+*.log
+
+# Virtual Environments
+.venv/
+.venv311/
+venv/
+
+# Caches
+.pytest_cache/
