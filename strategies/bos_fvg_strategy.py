@@ -48,12 +48,25 @@ class BOSFVGStrategy:
         self.end_time = time.fromisoformat(self.params['trading_end_time'])
         self.tz = pytz.timezone(self.params['timezone'])
 
-    def set_data(self, data: pd.DataFrame):
-        """Sets and preprocesses the historical data."""
-        self.data = data.copy()
+    def set_data(self, data: pd.DataFrame, htf_data: pd.DataFrame):
+        """Sets and preprocesses the historical data, merging higher timeframe data."""
+        # Calculate HTF indicator (e.g., 20-period EMA on 1h)
+        htf_data['htf_ema'] = htf_data['close'].ewm(span=20, adjust=False).mean()
+
+        # Merge HTF data into the main dataframe
+        # Use merge_asof to find the latest HTF candle for each 5m candle
+        self.data = pd.merge_asof(
+            data.sort_index(),
+            htf_data[['htf_ema']].sort_index(),
+            left_index=True,
+            right_index=True,
+            direction='backward'
+        ).copy()
+
         # Add ADX for trend strength filtering
         adx = self.data.ta.adx(length=14)
         self.data = pd.concat([self.data, adx], axis=1)
+
         # HOD/LOD is now calculated dynamically in the evaluate loop
         self._calculate_fvg()
 

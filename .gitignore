@@ -17,6 +17,9 @@ poetry.lock
 # Jupyter
 .ipynb_checkpoints/
 
+# Secrets
+config.py
+
 # Data & logs
 results/
 logs/
@@ -24,6 +27,7 @@ logs/
 *.parquet
 *.csv
 *.log
+backtest_results.log
 
 # Virtual Environments
 .venv/

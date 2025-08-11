@@ -1,240 +1,210 @@
+import os
 import ccxt
 import pandas as pd
 import logging
-import os
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
+from datetime import datetime, timedelta, timezone
+import pytz
+import config
 
 from strategies.bos_fvg_strategy import BOSFVGStrategy
-from ai.ai_analyzer import AIAnalyzer
-from ai.providers import OpenAICompatibleProvider
 
 # --- Setup ---
-load_dotenv()
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    handlers=[
+        logging.FileHandler('backtest_results.log', mode='w'),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-SYMBOL = 'BTC/USDT'
-TIMEFRAME = '1m'
+ASSETS_TO_TEST = {
+    'binance': ['ETH/USDT', 'BTC/USDT', 'BNB/USDT'],
+    'bybit': ['NDXUSDT']  # Nasdaq 100 Futures symbol on Bybit
+}
+TIMEFRAME = '5m'
 ACCOUNT_BALANCE = 10000
-BACKTEST_DAYS = 30 # Number of days to backtest
-AI_CONFIDENCE_THRESHOLD = 60
-USE_AI_ANALYZER = False # Set to True to enable AI confidence check
+BACKTEST_DAYS = 180
 
 # --- Exchange Connection ---
-def get_exchange():
-    """Initializes and returns a CCXT exchange instance for fetching data."""
-    api_key = os.getenv("BINANCE_API_KEY")
-    api_secret = os.getenv("BINANCE_API_SECRET")
-
+def get_exchange(exchange_name, api_key, api_secret):
+    """Initializes and returns a CCXT exchange instance using provided API keys."""
     if not api_key or not api_secret:
-        logger.error("BINANCE_API_KEY and/or BINANCE_API_SECRET not found in .env file.")
+        logger.error(f"API keys were not provided for {exchange_name}.")
         return None
-
+    
     try:
-        exchange = ccxt.binance({
-            'apiKey': api_key,
-            'secret': api_secret,
-            'enableRateLimit': True,
+        exchange_class = getattr(ccxt, exchange_name)
+        exchange = exchange_class({
+            'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True
         })
-        exchange.set_sandbox_mode(True)
-        exchange.load_markets()
-        logger.info("Successfully connected to Binance sandbox.")
+        
+        # Set sandbox mode if available (supported by binance, not all exchanges)
+        if exchange_name in ['binance'] and hasattr(exchange, 'set_sandbox_mode'):
+            exchange.set_sandbox_mode(True)
+            
+        logger.info(f"Successfully connected to {exchange_name}.")
         return exchange
     except Exception as e:
-        logger.error(f"Error connecting to Binance: {e}")
+        logger.error(f"Error connecting to {exchange_name}: {e}")
         return None
 
 def fetch_historical_data(exchange, symbol, timeframe, days):
     """Fetches historical OHLCV data for the specified period."""
-    logger.info(f"Starting historical data fetch for {days} days...")
-    since = exchange.parse8601((datetime.utcnow() - timedelta(days=days)).isoformat())
+    logger.info(f"[{symbol}] Fetching {days} days of {timeframe} data...")
+    since = exchange.parse8601((datetime.now(timezone.utc) - timedelta(days=days)).isoformat())
     all_ohlcv = []
-    batch_num = 1
-    while True:
-        try:
+    try:
+        while True:
             ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=1000)
             if not ohlcv:
                 break
-            logger.info(f"Fetched batch {batch_num} with {len(ohlcv)} candles.")
             all_ohlcv.extend(ohlcv)
             since = ohlcv[-1][0] + 1
-            batch_num += 1
-        except Exception as e:
-            logger.error(f"Error fetching data batch: {e}")
-            break
+    except Exception as e:
+        logger.error(f"[{symbol}] Error fetching data: {e}")
+        return pd.DataFrame()
     
     df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_localize('UTC')
     df.set_index('timestamp', inplace=True)
-    logger.info(f"Fetched {len(df)} candles for backtesting.")
+    logger.info(f"[{symbol}] Fetched {len(df)} candles.")
     return df.astype(float)
 
 # --- Backtesting Engine ---
-def run_backtest():
-    """Main function to run the backtesting simulation."""
-    exchange = get_exchange()
-    if not exchange:
-        logger.error("Failed to initialize exchange. Exiting backtest.")
-        return
+def run_backtest_for_asset(symbol, exchange):
+    """Main function to run the backtesting simulation for a single asset."""
+    logger.info(f"[{symbol}] Starting backtest...")
 
-    # Initialize Strategy and AI Analyzer
     strategy_params = {
-        'risk_per_trade': 1.0,
-        'reward_ratio': 2.0,
-        'trading_start_time': '09:30',
-        'opening_range_end_time': '10:30',
-        'trading_end_time': '16:00',
-        'timezone': 'America/New_York',
+        'risk_per_trade': 1.0, 'reward_ratio': 2.0,
+        'trading_start_time': '09:30', 'opening_range_end_time': '10:30',
+        'trading_end_time': '16:00', 'timezone': 'America/New_York',
     }
-    strategy = BOSFVGStrategy(symbol=SYMBOL, params=strategy_params, account_balance=ACCOUNT_BALANCE)
+    strategy = BOSFVGStrategy(symbol=symbol, params=strategy_params, account_balance=ACCOUNT_BALANCE)
     
-    ai_analyzer = None
-    if USE_AI_ANALYZER:
-        try:
-            api_key = os.getenv("OPENROUTER_API_KEY")
-            ai_provider = OpenAICompatibleProvider(
-                api_key=api_key,
-                model="mistralai/mistral-7b-instruct:free", # Or any other valid model
-                base_url="https://openrouter.ai/api/v1"
-            )
-            ai_analyzer = AIAnalyzer(provider=ai_provider)
-            logger.info("AI Analyzer initialized successfully.")
-        except ValueError as e:
-            logger.error(f"Failed to initialize AI Analyzer: {e}")
-            return
-
-    # Fetch data
-    data = fetch_historical_data(exchange, SYMBOL, TIMEFRAME, BACKTEST_DAYS)
-    if data.empty:
-        logger.error("No data for backtesting. Exiting.")
+    # Fetch main and HTF data
+    logger.info(f"[{symbol}] Fetching main timeframe ({TIMEFRAME}) data...")
+    data = fetch_historical_data(exchange, symbol, TIMEFRAME, BACKTEST_DAYS)
+    logger.info(f"[{symbol}] Fetching higher timeframe (1h) data...")
+    htf_data = fetch_historical_data(exchange, symbol, '1h', BACKTEST_DAYS)
+    if data.empty or htf_data.empty:
+        logger.error(f"[{symbol}] No data for backtesting. Skipping.")
         return
 
-    logger.info(f"Fetched {len(data)} candles. Data head:\n{data.head()}")
-    logger.info(f"Data tail:\n{data.tail()}")
-
-    # Save data to CSV for inspection
-    try:
-        data.to_csv('fetched_data.csv')
-        logger.info("Saved fetched data to fetched_data.csv")
-    except Exception as e:
-        logger.error(f"Failed to save data to CSV: {e}")
-
-    # Set the historical data on the strategy once to pre-calculate indicators
-    strategy.set_data(data)
-
+    logger.info(f"[{symbol}] Setting strategy data...")
+    strategy.set_data(data, htf_data)
+    logger.info(f"[{symbol}] Strategy data set. Processed data length: {len(strategy.data)}.")
     trades_log = []
 
-    # Loop through historical data, starting from index 1
-    for i in range(1, len(data)):
+    logger.info(f"[{symbol}] Starting evaluation loop...")
+    # Iterate through the strategy's processed data length
+    for i in range(1, len(strategy.data)):
         signal = strategy.evaluate(index=i)
-
         if signal:
-            logger.info(f"[{data.index[i]}] Strategy generated signal: {signal['direction']}")
+            trade_result = 'ongoing'
+            # Simulate trade execution from the signal point forward
+            for j in range(i + 1, len(strategy.data)):
+                future_low, future_high = strategy.data['low'].iloc[j], strategy.data['high'].iloc[j]
+                if signal['direction'] == 'long':
+                    if future_low <= signal['stop_loss']:
+                        trade_result = 'loss'
+                        break
+                    if future_high >= signal['take_profit']:
+                        trade_result = 'win'
+                        break
+                elif signal['direction'] == 'short':
+                    if future_high >= signal['stop_loss']:
+                        trade_result = 'loss'
+                        break
+                    if future_low <= signal['take_profit']:
+                        trade_result = 'win'
+                        break
             
-            confidence = 100 # Default to 100 if AI is disabled
-            if USE_AI_ANALYZER:
-                # Get AI confidence score
-                market_context = data.iloc[i-10:i].to_string()
-                confidence = ai_analyzer.get_trade_confidence(market_context, signal)
-                logger.info(f"AI Confidence Score: {confidence}")
+            trade_pnl = 0
+            if trade_result == 'win':
+                pnl_calc = (signal['take_profit'] - signal['entry_price']) if signal['direction'] == 'long' else (signal['entry_price'] - signal['take_profit'])
+                trade_pnl = pnl_calc * signal['size']
+            elif trade_result == 'loss':
+                pnl_calc = (signal['stop_loss'] - signal['entry_price']) if signal['direction'] == 'long' else (signal['entry_price'] - signal['stop_loss'])
+                trade_pnl = pnl_calc * signal['size']
 
-            if confidence >= AI_CONFIDENCE_THRESHOLD:
-                logger.info("Trade approved. Simulating trade...")
-                # Simulate the trade to see outcome
-                trade_result = 'ongoing'
+            trades_log.append({
+                'timestamp': signal['timestamp'], 'direction': signal['direction'],
+                'entry_price': signal['entry_price'], 'stop_loss': signal['stop_loss'],
+                'take_profit': signal['take_profit'], 'result': trade_result, 'pnl': trade_pnl
+            })
 
-                # Look ahead to see if SL or TP was hit
-                for j in range(i + 1, len(data)):
-                    future_low = data['low'].iloc[j]
-                    future_high = data['high'].iloc[j]
+    logger.info(f"[{symbol}] Evaluation loop finished. Generating summary...")
+    print_summary(trades_log, symbol)
 
-                    if signal['direction'] == 'long':
-                        if future_low <= signal['stop_loss']:
-                            trade_result = 'loss'
-                            break
-                        if future_high >= signal['take_profit']:
-                            trade_result = 'win'
-                            break
-                    elif signal['direction'] == 'short':
-                        if future_high >= signal['stop_loss']:
-                            trade_result = 'loss'
-                            break
-                        if future_low <= signal['take_profit']:
-                            trade_result = 'win'
-                            break
-                
-                # Correct PnL calculation using trade size from signal
-                trade_pnl = 0
-                if trade_result == 'win':
-                    if signal['direction'] == 'long':
-                        trade_pnl = (signal['take_profit'] - signal['entry_price']) * signal['size']
-                    else: # short
-                        trade_pnl = (signal['entry_price'] - signal['take_profit']) * signal['size']
-                elif trade_result == 'loss':
-                    if signal['direction'] == 'long':
-                        trade_pnl = (signal['stop_loss'] - signal['entry_price']) * signal['size']
-                    else: # short
-                        trade_pnl = (signal['entry_price'] - signal['stop_loss']) * signal['size']
+def print_summary(trades_log, symbol):
+    """Prints a detailed summary of the backtest results for a given symbol."""
+    header = f"--- Backtest Summary for {symbol} ---"
+    logger.info("\n" + "="*len(header))
+    logger.info(header)
+    logger.info("="*len(header))
 
-                trade_details = {
-                    'timestamp': signal['timestamp'],
-                    'direction': signal['direction'],
-                    'entry_price': signal['entry_price'],
-                    'stop_loss': signal['stop_loss'],
-                    'take_profit': signal['take_profit'],
-                    'result': trade_result,
-                    'pnl': trade_pnl
-                }
-                trades_log.append(trade_details)
-                logger.info(f"Trade Result: {trade_result.upper()}, PnL: ${trade_pnl:,.2f}")
-                # Prevent more trades today is handled within the strategy
-            else:
-                logger.info("Trade rejected by AI.")
-
-    # --- Summary ---
-    print_summary(trades_log)
-
-def print_summary(trades_log):
-    """Prints a detailed summary of the backtest results."""
-    logger.info("\n--- Backtest Summary ---")
     if not trades_log:
-        logger.info("No trades were executed.")
+        logger.info(f"[{symbol}] No trades were executed.")
         return
 
     trades_df = pd.DataFrame(trades_log)
-    
     wins = len(trades_df[trades_df['result'] == 'win'])
     losses = len(trades_df[trades_df['result'] == 'loss'])
     win_rate = (wins / len(trades_df)) * 100 if trades_df.shape[0] > 0 else 0
-    
     total_pnl = trades_df['pnl'].sum()
     final_balance = ACCOUNT_BALANCE + total_pnl
     net_return_percent = (total_pnl / ACCOUNT_BALANCE) * 100
 
-    logger.info(f"Initial Balance: ${ACCOUNT_BALANCE:,.2f}")
-    logger.info(f"Final Balance:   ${final_balance:,.2f}")
-    logger.info(f"Net Return:      ${total_pnl:,.2f} ({net_return_percent:.2f}%)")
-    logger.info(f"Total Trades:    {len(trades_df)}")
-    logger.info(f"Wins:            {wins}")
-    logger.info(f"Losses:          {losses}")
-    logger.info(f"Win Rate:        {win_rate:.2f}%")
-
-    trades_df['pnl_percent'] = (trades_df['pnl'] / ACCOUNT_BALANCE) * 100
-    logger.info("\n--- Detailed Trade Log ---")
-    # Format float columns for better readability
-    trades_df['entry_price'] = trades_df['entry_price'].map('{:,.2f}'.format)
-    trades_df['stop_loss'] = trades_df['stop_loss'].map('{:,.2f}'.format)
-    trades_df['take_profit'] = trades_df['take_profit'].map('{:,.2f}'.format)
-    trades_df['pnl'] = trades_df['pnl'].map('${:,.2f}'.format)
-    trades_df['pnl_percent'] = trades_df['pnl_percent'].map('{:,.2f}%'.format)
-    
+    logger.info(f"[{symbol}] Initial Balance: ${ACCOUNT_BALANCE:,.2f}")
+    logger.info(f"[{symbol}] Final Balance:   ${final_balance:,.2f}")
+    logger.info(f"[{symbol}] Net Return:      ${total_pnl:,.2f} ({net_return_percent:.2f}%)")
+    logger.info(f"[{symbol}] Total Trades:    {len(trades_df)}")
+    logger.info(f"[{symbol}] Win Rate:        {win_rate:.2f}% (Wins: {wins}, Losses: {losses})")
+    logger.info(f"\n--- [{symbol}] Detailed Trade Log ---")
     logger.info(trades_df.to_string())
 
 if __name__ == "__main__":
-    run_backtest()
+    logger.info("Starting backtests for all configured exchanges and assets...")
+    
+    for exchange_name, assets in ASSETS_TO_TEST.items():
+        logger.info(f"\n--- Exchange: {exchange_name.upper()} ---")
+
+        # Load API keys from config.py
+        api_key_name = f"{exchange_name.upper()}_API_KEY"
+        api_secret_name = f"{exchange_name.upper()}_API_SECRET"
+        api_key = getattr(config, api_key_name, None)
+        api_secret = getattr(config, api_secret_name, None)
+
+        # Detailed checks for API keys
+        if not api_key:
+            logger.error(f"'{api_key_name}' not found in config.py. Skipping {exchange_name}.")
+            continue
+        if 'YOUR_' in api_key:
+            logger.error(f"'{api_key_name}' in config.py still contains the placeholder value. Please replace it with your actual key.")
+            continue
+        if not api_secret:
+            logger.error(f"'{api_secret_name}' not found in config.py. Skipping {exchange_name}.")
+            continue
+        if 'YOUR_' in api_secret:
+            logger.error(f"'{api_secret_name}' in config.py still contains the placeholder value. Please replace it with your actual secret.")
+            continue
+
+        exchange = get_exchange(exchange_name, api_key, api_secret)
+        
+        if not exchange:
+            logger.warning(f"Skipping backtests for {exchange_name} due to connection failure.")
+            continue
+            
+        logger.info(f"Starting sequential backtests for: {', '.join(assets)}")
+        for asset in assets:
+            try:
+                run_backtest_for_asset(asset, exchange)
+                logger.info(f"Backtest for {asset} completed successfully.")
+            except Exception as exc:
+                logger.error(f'{asset} backtest generated an exception: {exc}')
+                
+    logger.info("All backtests have been completed.")
